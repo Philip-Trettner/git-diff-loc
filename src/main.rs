@@ -128,11 +128,17 @@ enum LineType {
 struct Stats {
     added: usize,
     removed: usize,
+    test_added: usize,
+    test_removed: usize,
 }
 
 impl Stats {
     fn total(&self) -> usize {
         self.added + self.removed
+    }
+
+    fn test_total(&self) -> usize {
+        self.test_added + self.test_removed
     }
 }
 
@@ -215,21 +221,38 @@ fn classify_and_count(
 
     let language = detect_language(file_path);
     let line_type = classify_line(trimmed, language);
+    let is_test = is_test_file(file_path);
 
     match line_type {
         LineType::Code => {
             let stats = code_stats.entry(language).or_insert_with(Stats::default);
-            if is_added {
-                stats.added += 1;
+            if is_test {
+                if is_added {
+                    stats.test_added += 1;
+                } else {
+                    stats.test_removed += 1;
+                }
             } else {
-                stats.removed += 1;
+                if is_added {
+                    stats.added += 1;
+                } else {
+                    stats.removed += 1;
+                }
             }
         }
         LineType::Comment => {
-            if is_added {
-                comment_stats.added += 1;
+            if is_test {
+                if is_added {
+                    comment_stats.test_added += 1;
+                } else {
+                    comment_stats.test_removed += 1;
+                }
             } else {
-                comment_stats.removed += 1;
+                if is_added {
+                    comment_stats.added += 1;
+                } else {
+                    comment_stats.removed += 1;
+                }
             }
         }
     }
@@ -237,6 +260,36 @@ fn classify_and_count(
 
 fn is_empty_line(line: &str) -> bool {
     line.is_empty() || !line.chars().any(|c| c.is_alphanumeric())
+}
+
+fn is_test_file(file_path: &str) -> bool {
+    let path = Path::new(file_path);
+
+    // Check if any parent directory is named "test" or "tests"
+    for component in path.components() {
+        if let Some(name) = component.as_os_str().to_str() {
+            let lower = name.to_lowercase();
+            if lower == "test" || lower == "tests" {
+                return true;
+            }
+        }
+    }
+
+    // Check if filename ends with _test, _tests, -test, or -tests
+    if let Some(stem) = path.file_stem() {
+        if let Some(name) = stem.to_str() {
+            let lower = name.to_lowercase();
+            if lower.ends_with("_test")
+                || lower.ends_with("_tests")
+                || lower.ends_with("-test")
+                || lower.ends_with("-tests")
+            {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn detect_language(file_path: &str) -> Language {
@@ -267,16 +320,19 @@ fn print_results(code_stats: &HashMap<Language, Stats>, comment_stats: &Stats) {
     println!("\n{}", "Lines of Code Changes".bold().underline());
     println!();
 
-    // Collect all rows for table formatting
-    let mut rows: Vec<(String, usize, usize, usize)> = Vec::new();
+    // Collect all rows for table formatting (name, total, added, removed, test_total, test_added, test_removed)
+    let mut rows: Vec<(String, usize, usize, usize, usize, usize, usize)> = Vec::new();
 
     // Add comments first if there are any
-    if comment_stats.total() > 0 {
+    if comment_stats.total() > 0 || comment_stats.test_total() > 0 {
         rows.push((
             "Comments".to_string(),
             comment_stats.total(),
             comment_stats.added,
             comment_stats.removed,
+            comment_stats.test_total(),
+            comment_stats.test_added,
+            comment_stats.test_removed,
         ));
     }
 
@@ -285,40 +341,30 @@ fn print_results(code_stats: &HashMap<Language, Stats>, comment_stats: &Stats) {
     languages.sort_by_key(|(lang, _)| lang.name());
 
     for (language, stats) in languages {
-        if stats.total() > 0 {
+        if stats.total() > 0 || stats.test_total() > 0 {
             rows.push((
                 language.name().to_string(),
                 stats.total(),
                 stats.added,
                 stats.removed,
+                stats.test_total(),
+                stats.test_added,
+                stats.test_removed,
             ));
         }
     }
 
     // Calculate column widths (for the numbers only, signs are added separately)
-    let name_width = rows
-        .iter()
-        .map(|(name, _, _, _)| name.len())
-        .max()
-        .unwrap_or(0);
-    let total_width = rows
-        .iter()
-        .map(|(_, total, _, _)| total.to_string().len())
-        .max()
-        .unwrap_or(0);
-    let added_width = rows
-        .iter()
-        .map(|(_, _, added, _)| added.to_string().len())
-        .max()
-        .unwrap_or(0);
-    let removed_width = rows
-        .iter()
-        .map(|(_, _, _, removed)| removed.to_string().len())
-        .max()
-        .unwrap_or(0);
+    let name_width = rows.iter().map(|(name, ..)| name.len()).max().unwrap_or(0);
+    let total_width = rows.iter().map(|(_, total, ..)| total.to_string().len()).max().unwrap_or(0);
+    let added_width = rows.iter().map(|(_, _, added, ..)| added.to_string().len()).max().unwrap_or(0);
+    let removed_width = rows.iter().map(|(_, _, _, removed, ..)| removed.to_string().len()).max().unwrap_or(0);
+    let test_total_width = rows.iter().map(|(_, _, _, _, test_total, ..)| test_total.to_string().len()).max().unwrap_or(0);
+    let test_added_width = rows.iter().map(|(_, _, _, _, _, test_added, _)| test_added.to_string().len()).max().unwrap_or(0);
+    let test_removed_width = rows.iter().map(|(_, _, _, _, _, _, test_removed)| test_removed.to_string().len()).max().unwrap_or(0);
 
     // Print rows with proper alignment
-    for (i, (name, total, added, removed)) in rows.iter().enumerate() {
+    for (i, (name, total, added, removed, test_total, test_added, test_removed)) in rows.iter().enumerate() {
         // Format the name with padding
         let name_padded = format!("{:<width$}", name, width = name_width);
         let name_colored = if i == 0 && comment_stats.total() > 0 {
@@ -332,22 +378,30 @@ fn print_results(code_stats: &HashMap<Language, Stats>, comment_stats: &Stats) {
         let added_str = format!("+ {:>width$}", added, width = added_width);
         let removed_str = format!("- {:>width$}", removed, width = removed_width);
 
+        let test_total_str = format!("{:>width$}", test_total, width = test_total_width);
+        let test_added_str = format!("+ {:>width$}", test_added, width = test_added_width);
+        let test_removed_str = format!("- {:>width$}", test_removed, width = test_removed_width);
+
         println!(
-            "{}  {} ({} / {})",
+            "{}  {} ({} / {})  |  {} ({} / {})",
             name_colored,
             total_str.yellow(),
             added_str.green(),
-            removed_str.red()
+            removed_str.red(),
+            test_total_str.bright_yellow(),
+            test_added_str.bright_green(),
+            test_removed_str.bright_red()
         );
     }
 
     let total_code: usize = code_stats.values().map(|s| s.total()).sum();
-    let total_all = total_code + comment_stats.total();
+    let total_test: usize = code_stats.values().map(|s| s.test_total()).sum();
+    let total_all = total_code + total_test + comment_stats.total();
 
     if total_all > 0 {
         println!();
-        // Width: name + "  " + total + " (" + "+added" + " / " + "-removed" + ")"
-        let separator_width = name_width + 2 + total_width + 3 + 1 + added_width + 3 + 1 + removed_width + 1;
+        // Width: name + "  " + total + " (" + "+ added" + " / " + "- removed" + ")" + "  |  " + test_total + " (" + "+ test_added" + " / " + "- test_removed" + ")"
+        let separator_width = name_width + 2 + total_width + 3 + 2 + added_width + 3 + 2 + removed_width + 1 + 5 + test_total_width + 3 + 2 + test_added_width + 3 + 2 + test_removed_width + 1;
         println!("{}", "─".repeat(separator_width).bright_black());
 
         let total_label = format!("{:<width$}", "Total changes", width = name_width);
